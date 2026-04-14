@@ -52,6 +52,30 @@
         "FIRE", "WATER", "GRASS", "ELECTRIC", "PSYCHIC", "ICE", "DRAGON", "DARK", "FAIRY", "STELLAR"
     ];
 
+    // MoveTarget Enums from Pokerogue (src/enums/move-target.ts)
+    const MoveTarget = {
+        0: "USER",
+        1: "OTHER",
+        2: "ALL_OTHERS",
+        3: "NEAR_OTHER",
+        4: "ALL_NEAR_OTHERS",
+        5: "NEAR_ENEMY",
+        6: "ALL_NEAR_ENEMIES",
+        7: "RANDOM_NEAR_ENEMY",
+        8: "ALL_ENEMIES",
+        9: "ATTACKER",
+        10: "NEAR_ALLY",
+        11: "ALLY",
+        12: "USER_OR_NEAR_ALLY",
+        13: "USER_AND_ALLIES",
+        14: "ALL",
+        15: "USER_SIDE",
+        16: "ENEMY_SIDE",
+        17: "BOTH_SIDES",
+        18: "PARTY",
+        19: "CURSE"
+    };
+
     // 1. Intercept Array.prototype.push to steal the BattleScene object
     let sceneCaptured = false;
     const origPush = Array.prototype.push;
@@ -219,7 +243,19 @@
                      if (typeof window.globalScene.getPlayerField === 'function') {
                          const field = window.globalScene.getPlayerField();
                          if (field && field.length > 0) {
-                             const activePokemon = field[0]; // Simplified for now
+                             let activePokemon = null;
+                             if (ui.handlers[UiMode.FIGHT] && ui.handlers[UiMode.FIGHT].pokemon) {
+                                 activePokemon = ui.handlers[UiMode.FIGHT].pokemon;
+                             } else if (ui.handlers[UiMode.COMMAND] && ui.handlers[UiMode.COMMAND].pokemon) {
+                                 activePokemon = ui.handlers[UiMode.COMMAND].pokemon;
+                             } else if (ui.handlers[UiMode.COMMAND] && typeof ui.handlers[UiMode.COMMAND].activeBattlerIndex === 'number') {
+                                 activePokemon = field[ui.handlers[UiMode.COMMAND].activeBattlerIndex];
+                             } else if (ui.handlers[UiMode.COMMAND] && typeof ui.handlers[UiMode.COMMAND].fieldIndex === 'number') {
+                                 activePokemon = field[ui.handlers[UiMode.COMMAND].fieldIndex];
+                             } else {
+                                 activePokemon = field[0];
+                             }
+
                              if (activePokemon && (activePokemon.getMoveset || activePokemon.moveset)) {
                                  const moveset = activePokemon.getMoveset ? activePokemon.getMoveset() : activePokemon.moveset;
                                  if (moveset && moveset.length > 0) {
@@ -265,7 +301,45 @@
                      if (targetHandler && targetHandler.targets) {
                          payloadData.targets = targetHandler.targets;
 
-                         htmlData += `<div style="grid-column: span 2; text-align: center;">Select Target</div>`;
+                         if (typeof window.globalScene.getPlayerField === 'function') {
+                             const field = window.globalScene.getPlayerField();
+                             if (field && field.length > 0) {
+                                 let activePokemon = null;
+                                 if (ui.handlers[UiMode.FIGHT] && ui.handlers[UiMode.FIGHT].pokemon) {
+                                     activePokemon = ui.handlers[UiMode.FIGHT].pokemon;
+                                 } else if (ui.handlers[UiMode.COMMAND] && ui.handlers[UiMode.COMMAND].pokemon) {
+                                     activePokemon = ui.handlers[UiMode.COMMAND].pokemon;
+                                 } else if (ui.handlers[UiMode.COMMAND] && typeof ui.handlers[UiMode.COMMAND].activeBattlerIndex === 'number') {
+                                     activePokemon = field[ui.handlers[UiMode.COMMAND].activeBattlerIndex];
+                                 } else if (ui.handlers[UiMode.COMMAND] && typeof ui.handlers[UiMode.COMMAND].fieldIndex === 'number') {
+                                     activePokemon = field[ui.handlers[UiMode.COMMAND].fieldIndex];
+                                 } else {
+                                     activePokemon = field[0];
+                                 }
+
+                                 if (activePokemon && targetHandler.move !== undefined && (activePokemon.getMoveset || activePokemon.moveset)) {
+                                     const moveset = activePokemon.getMoveset ? activePokemon.getMoveset() : activePokemon.moveset;
+                                     if (moveset) {
+                                         for (let i = 0; i < moveset.length; i++) {
+                                             const moveObj = moveset[i];
+                                             if (moveObj && moveObj.moveId === targetHandler.move) {
+                                                 const move = moveObj.getMove ? moveObj.getMove() : null;
+                                                 payloadData.moveName = moveObj.getName ? moveObj.getName() : (move ? move.name : "Unknown");
+                                                 if (move && move.moveTarget !== undefined) {
+                                                     payloadData.targetType = MoveTarget[move.moveTarget] || move.moveTarget.toString();
+                                                 }
+                                                 break;
+                                             }
+                                         }
+                                     }
+                                 }
+                             }
+                         }
+
+                         let targetTypeStr = payloadData.targetType ? ` (${payloadData.targetType})` : "";
+                         let moveNameStr = payloadData.moveName ? ` - ${payloadData.moveName}` : "";
+
+                         htmlData += `<div style="grid-column: span 2; text-align: center;">Select Target${targetTypeStr}${moveNameStr}</div>`;
                          targetHandler.targets.forEach(targetIdx => {
                               htmlData += `
                                  <div style="background: rgba(46, 204, 113, 0.1); padding: 5px; border-radius: 4px; text-align: center;">
