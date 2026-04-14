@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Pokerogue Moves Tracker
+// @name         Pokerogue Moves Tracker & Two-Way State Machine
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  External wiretap to track current Pokemon's moves, types, and PP in Pokerogue.
+// @version      2.0
+// @description  External wiretap to track game state and inject commands.
 // @author       Jules
 // @match        https://pokerogue.net/*
 // @match        http://localhost:8000/*
@@ -13,7 +13,40 @@
 (function() {
     'use strict';
 
-    // List of Pokemon types mapped to their enum values
+    // Button Enums from Pokerogue (src/enums/buttons.ts)
+    const Button = {
+        UP: 0,
+        DOWN: 1,
+        LEFT: 2,
+        RIGHT: 3,
+        SUBMIT: 4,
+        ACTION: 5,
+        CANCEL: 6,
+        MENU: 7
+    };
+
+    // Command Enums from Pokerogue (src/enums/command.ts)
+    const Command = {
+        FIGHT: 0,
+        BALL: 1,
+        POKEMON: 2,
+        RUN: 3,
+        TERA: 4
+    };
+
+    // UiMode Enums from Pokerogue (src/enums/ui-mode.ts)
+    const UiMode = {
+        MESSAGE: 0,
+        TITLE: 1,
+        COMMAND: 2, // MAIN_MENU
+        FIGHT: 3,   // FIGHT_MENU
+        BALL: 4,
+        TARGET_SELECT: 5,
+        MODIFIER_SELECT: 6,
+        // ... other modes
+    };
+
+    // List of Pokemon types
     const POKEMON_TYPES = [
         "NORMAL", "FIGHTING", "FLYING", "POISON", "GROUND", "ROCK", "BUG", "GHOST", "STEEL",
         "FIRE", "WATER", "GRASS", "ELECTRIC", "PSYCHIC", "ICE", "DRAGON", "DARK", "FAIRY", "STELLAR"
@@ -28,13 +61,10 @@
         if (!sceneCaptured) {
             for (let i = 0; i < args.length; i++) {
                 const item = args[i];
-                // Check if the pushed object looks like our BattleScene
                 if (item && typeof item === 'object' && item.sys && item.sys.game && item.party) {
                     window.globalScene = item;
                     sceneCaptured = true;
-                    console.log("[Moves Tracker] Successfully captured BattleScene!");
-
-                    // Restore original push to avoid performance overhead
+                    console.log("[Thor Bridge] Successfully captured BattleScene!");
                     Array.prototype.push = origPush;
                     break;
                 }
@@ -60,84 +90,221 @@
             font-size: 14px;
             z-index: 999999;
             pointer-events: none;
-            min-width: 200px;
+            min-width: 250px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        `;
+        document.body.appendChild(container);
+
+        const stateHeader = document.createElement('div');
+        stateHeader.id = 'pokerogue-state-header';
+        stateHeader.style.cssText = `
+            text-align: center;
+            font-weight: bold;
+            font-size: 16px;
+            border-bottom: 1px solid #2ecc71;
+            padding-bottom: 5px;
+        `;
+        container.appendChild(stateHeader);
+
+        const dataGrid = document.createElement('div');
+        dataGrid.id = 'pokerogue-data-grid';
+        dataGrid.style.cssText = `
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 10px;
         `;
-        document.body.appendChild(container);
-        return container;
+        container.appendChild(dataGrid);
+
+        return { container, stateHeader, dataGrid };
     }
 
-    let uiContainer = null;
-
+    let uiElements = null;
     window.addEventListener('DOMContentLoaded', () => {
-        uiContainer = createUI();
-        uiContainer.innerHTML = `<div style="grid-column: span 2; text-align: center;">Waiting for battle...</div>`;
+        uiElements = createUI();
+        uiElements.stateHeader.innerText = "WAITING...";
+        uiElements.dataGrid.innerHTML = `<div style="grid-column: span 2; text-align: center;">Waiting for battle...</div>`;
     });
 
-    // 3. Polling loop to update moves and PP
+    // 3. The Command Receiver (The Bridge)
+    window.ThorBridge = {
+        execute: function(commandStr) {
+            if (!window.globalScene || !window.globalScene.ui) {
+                console.warn("[Thor Bridge] Cannot execute command. UI not available.");
+                return;
+            }
+
+            const ui = window.globalScene.ui;
+            const currentMode = ui.getMode();
+
+            console.log(`[Thor Bridge] Executing command: ${commandStr} in mode: ${currentMode}`);
+
+            try {
+                if (commandStr === "ACTION_BACK") {
+                    ui.processInput(Button.CANCEL);
+                    return;
+                }
+
+                if (currentMode === UiMode.COMMAND) { // MAIN_MENU
+                    switch (commandStr) {
+                        case "MAIN_FIGHT":
+                            ui.setCursor(Command.FIGHT);
+                            ui.processInput(Button.ACTION);
+                            break;
+                        case "MAIN_BALL":
+                            ui.setCursor(Command.BALL);
+                            ui.processInput(Button.ACTION);
+                            break;
+                        case "MAIN_POKEMON":
+                            ui.setCursor(Command.POKEMON);
+                            ui.processInput(Button.ACTION);
+                            break;
+                        case "MAIN_RUN":
+                            ui.setCursor(Command.RUN);
+                            ui.processInput(Button.ACTION);
+                            break;
+                    }
+                } else if (currentMode === UiMode.FIGHT) { // FIGHT_MENU
+                    if (commandStr.startsWith("SELECT_MOVE_")) {
+                        const moveIndex = parseInt(commandStr.replace("SELECT_MOVE_", ""), 10);
+                        if (!isNaN(moveIndex) && moveIndex >= 0 && moveIndex <= 3) {
+                            ui.setCursor(moveIndex);
+                            ui.processInput(Button.ACTION);
+                        }
+                    }
+                } else if (currentMode === UiMode.TARGET_SELECT) { // TARGET_SELECT
+                    if (commandStr.startsWith("SELECT_TARGET_")) {
+                        const targetIndexStr = commandStr.replace("SELECT_TARGET_", "");
+                        // Target selects might need specific logic depending on available targets.
+                        // For MVP, we will try to setCursor to the index corresponding to the target.
+                        // Enemy indices are typically 2 and 3 in double battles.
+                        // Assuming targetIndex is passed as the actual BattlerIndex (e.g. 2 or 3)
+                        const targetIndex = parseInt(targetIndexStr, 10);
+                        if (!isNaN(targetIndex)) {
+                            ui.setCursor(targetIndex);
+                            ui.processInput(Button.ACTION);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("[Thor Bridge] Error executing command:", e);
+            }
+        }
+    };
+
+    // 4. Polling loop to update state
+    let lastPayloadStr = "";
+
     setInterval(() => {
-        if (!uiContainer || !window.globalScene) return;
+        if (!uiElements || !window.globalScene || !window.globalScene.ui) return;
 
         try {
-            // Check if getPlayerField exists
-            if (typeof window.globalScene.getPlayerField !== 'function') return;
+            let stateStr = "BUSY";
+            let payloadData = {};
+            let htmlData = '';
 
-            // Get active player Pokemon
-            const field = window.globalScene.getPlayerField();
-            if (!field || field.length === 0) {
-                uiContainer.innerHTML = `<div style="grid-column: span 2; text-align: center;">No active Pokemon</div>`;
-                return;
+            const ui = window.globalScene.ui;
+            const currentMode = ui.getMode();
+
+            // Check if UI is active and ready for input.
+            // If overlayActive is true, a transition is happening.
+            if (!ui.overlayActive) {
+                 if (currentMode === UiMode.COMMAND) {
+                     stateStr = "MAIN_MENU";
+                 } else if (currentMode === UiMode.FIGHT) {
+                     stateStr = "FIGHT_MENU";
+
+                     if (typeof window.globalScene.getPlayerField === 'function') {
+                         const field = window.globalScene.getPlayerField();
+                         if (field && field.length > 0) {
+                             const activePokemon = field[0]; // Simplified for now
+                             if (activePokemon && (activePokemon.getMoveset || activePokemon.moveset)) {
+                                 const moveset = activePokemon.getMoveset ? activePokemon.getMoveset() : activePokemon.moveset;
+                                 if (moveset && moveset.length > 0) {
+                                     payloadData.moves = [];
+                                     for (let i = 0; i < 4; i++) {
+                                         const moveObj = moveset[i];
+                                         if (moveObj && moveObj.moveId !== 0) {
+                                             const move = moveObj.getMove ? moveObj.getMove() : null;
+                                             const name = moveObj.getName ? moveObj.getName() : (move ? move.name : "Unknown");
+                                             const maxPp = moveObj.getMovePp ? moveObj.getMovePp() : (move ? move.pp : 0);
+                                             const ppUsed = moveObj.ppUsed || 0;
+                                             const currentPp = Math.max(0, maxPp - ppUsed);
+
+                                             payloadData.moves.push({
+                                                 index: i,
+                                                 name: name,
+                                                 pp: currentPp,
+                                                 maxPp: maxPp
+                                             });
+
+                                             htmlData += `
+                                                 <div style="background: rgba(46, 204, 113, 0.1); padding: 5px; border-radius: 4px;">
+                                                     <div style="font-weight: bold; margin-bottom: 2px;">${name}</div>
+                                                     <div style="font-size: 12px; margin-top: 3px;">PP: ${currentPp}/${maxPp}</div>
+                                                 </div>
+                                             `;
+                                         } else {
+                                             htmlData += `
+                                                 <div style="background: rgba(255, 255, 255, 0.05); padding: 5px; border-radius: 4px; display: flex; align-items: center; justify-content: center; opacity: 0.5;">
+                                                     - Empty -
+                                                 </div>
+                                             `;
+                                         }
+                                     }
+                                 }
+                             }
+                         }
+                     }
+                 } else if (currentMode === UiMode.TARGET_SELECT) {
+                     stateStr = "TARGET_SELECT";
+                     // Try to extract targets from the TargetSelectUiHandler if possible
+                     const targetHandler = ui.handlers[UiMode.TARGET_SELECT];
+                     if (targetHandler && targetHandler.targets) {
+                         payloadData.targets = targetHandler.targets;
+
+                         htmlData += `<div style="grid-column: span 2; text-align: center;">Select Target</div>`;
+                         targetHandler.targets.forEach(targetIdx => {
+                              htmlData += `
+                                 <div style="background: rgba(46, 204, 113, 0.1); padding: 5px; border-radius: 4px; text-align: center;">
+                                     Target ${targetIdx}
+                                 </div>
+                             `;
+                         });
+                     } else {
+                         htmlData = `<div style="grid-column: span 2; text-align: center;">Select Target</div>`;
+                     }
+                 }
             }
 
-            const activePokemon = field[0];
-
-            // Wait for moveset to be available
-            if (!activePokemon || (!activePokemon.getMoveset && !activePokemon.moveset)) return;
-
-            const moveset = activePokemon.getMoveset ? activePokemon.getMoveset() : activePokemon.moveset;
-
-            if (!moveset || moveset.length === 0) {
-                uiContainer.innerHTML = `<div style="grid-column: span 2; text-align: center;">Loading moves...</div>`;
-                return;
+            if (stateStr === "BUSY" || stateStr === "MAIN_MENU") {
+                 htmlData = `<div style="grid-column: span 2; text-align: center; opacity: 0.7;">State: ${stateStr}</div>`;
             }
 
-            let html = '';
-            for (let i = 0; i < 4; i++) {
-                const moveObj = moveset[i];
-                if (moveObj && moveObj.moveId !== 0) { // moveId 0 is usually NONE
-                    // In Pokerogue, PokemonMove.getMove() returns the underlying Move object
-                    const move = moveObj.getMove ? moveObj.getMove() : null;
-                    const name = moveObj.getName ? moveObj.getName() : (move ? move.name : "Unknown");
-                    const typeIndex = move ? move.type : -1;
-                    const typeName = (typeIndex >= 0 && typeIndex < POKEMON_TYPES.length) ? POKEMON_TYPES[typeIndex] : "???";
+            const payload = {
+                state: stateStr,
+                data: payloadData
+            };
+            const payloadStr = JSON.stringify(payload);
 
-                    const maxPp = moveObj.getMovePp ? moveObj.getMovePp() : (move ? move.pp : 0);
-                    const ppUsed = moveObj.ppUsed || 0;
-                    const currentPp = Math.max(0, maxPp - ppUsed);
+            // Update UI and Log if state changed
+            if (payloadStr !== lastPayloadStr) {
+                lastPayloadStr = payloadStr;
+                console.log("[Thor Bridge] Broadcast State:", payloadStr);
 
-                    html += `
-                        <div style="background: rgba(46, 204, 113, 0.1); padding: 5px; border-radius: 4px;">
-                            <div style="font-weight: bold; margin-bottom: 2px;">${name}</div>
-                            <div style="font-size: 11px; opacity: 0.8;">${typeName}</div>
-                            <div style="font-size: 12px; margin-top: 3px;">PP: ${currentPp}/${maxPp}</div>
-                        </div>
-                    `;
-                } else {
-                    html += `
-                        <div style="background: rgba(255, 255, 255, 0.05); padding: 5px; border-radius: 4px; display: flex; align-items: center; justify-content: center; opacity: 0.5;">
-                            - Empty -
-                        </div>
-                    `;
+                uiElements.stateHeader.innerText = `STATE: ${stateStr}`;
+                uiElements.dataGrid.innerHTML = htmlData;
+
+                // If AndroidInterface exists (for the real app), broadcast it
+                if (window.AndroidInterface && typeof window.AndroidInterface.onStateChanged === 'function') {
+                    window.AndroidInterface.onStateChanged(payloadStr);
                 }
             }
 
-            uiContainer.innerHTML = html;
-
         } catch (e) {
-            // Ignore errors silently during polling to prevent console spam
+            // Ignore errors silently during polling
         }
     }, 500);
 
