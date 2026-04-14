@@ -242,9 +242,17 @@
                     }
                 }
 
-                // Hide the text and Tera button container
+                // Hide the text inside the container, but preserve the Tera button
                 if (ui.handlers && ui.handlers[UiMode.COMMAND] && ui.handlers[UiMode.COMMAND].commandsContainer) {
-                    ui.handlers[UiMode.COMMAND].commandsContainer.setAlpha(0);
+                    const container = ui.handlers[UiMode.COMMAND].commandsContainer;
+                    if (container.list) {
+                        for (let i = 0; i < container.list.length; i++) {
+                            const child = container.list[i];
+                            if (child && child.name !== "terastallize-button") {
+                                child.setAlpha(0);
+                            }
+                        }
+                    }
                 }
             } catch (hideErr) {
                 // Silently fail if elements are not found yet
