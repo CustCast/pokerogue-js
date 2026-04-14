@@ -232,6 +232,24 @@
             const ui = window.globalScene.ui;
             const currentMode = ui.getMode();
 
+            // Hide the original "Fight, Ball, Pokemon, Run" menu
+            try {
+                // Hide the background box of the command menu
+                if (ui.getMessageHandler && typeof ui.getMessageHandler === 'function') {
+                    const messageHandler = ui.getMessageHandler();
+                    if (messageHandler && messageHandler.commandWindow) {
+                        messageHandler.commandWindow.setAlpha(0);
+                    }
+                }
+
+                // Hide the text and Tera button container
+                if (ui.handlers && ui.handlers[UiMode.COMMAND] && ui.handlers[UiMode.COMMAND].commandsContainer) {
+                    ui.handlers[UiMode.COMMAND].commandsContainer.setAlpha(0);
+                }
+            } catch (hideErr) {
+                // Silently fail if elements are not found yet
+            }
+
             // Check if UI is active and ready for input.
             // If overlayActive is true, a transition is happening.
             if (!ui.overlayActive) {
